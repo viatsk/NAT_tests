@@ -1,4 +1,4 @@
-package main
+package tmp
 
 import (
     "sync/atomic"
@@ -209,6 +209,9 @@ func main() {
 
 
    // NOW WE SEND MESSAGES WEEE 
+    offerPeerConnection, err := offerAPI.NewPeerConnection(webrtc.Configuration{})
+    answerPeerConnection, err := answerAPI.NewPeerConnection(webrtc.Configuration{})
+    offerDataChannel, err := offerPeerConnection.CreateDataChannel("channel", nil)
 
 
 /* OLD 
