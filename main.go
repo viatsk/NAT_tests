@@ -1,4 +1,4 @@
-package tmp
+package main
 
 import (
     "sync/atomic"
@@ -37,7 +37,7 @@ func errHandler(err error) {
     }
 }
 
-/*
+
 type dummyNIC struct {
     vnet.Net
     onInboundChunkHandler func(vnet.Chunk)
@@ -72,9 +72,9 @@ func (a *Agent) listenUDP (address string) error {
     if err != nil {
         return err
     }
+    p(conn)
     return nil
 }
-*/
 
 func getNATType (inp string) (*vnet.NATType) {
     var mapBehaviour, filBehaviour vnet.EndpointDependencyType
@@ -198,7 +198,7 @@ func main() {
 
     // create an answer VNET 
     answerVNet := vnet.NewNet(&vnet.NetConfig {
-        StaticIPs: []string{"1.2.3.5"}, 
+        StaticIPs: []string{"1.2.3.5"},
     })
     errHandler(rootRouter.AddNet(network))
     errHandler(secondRouter.AddNet(network))
@@ -213,6 +213,16 @@ func main() {
     answerPeerConnection, err := answerAPI.NewPeerConnection(webrtc.Configuration{})
     offerDataChannel, err := offerPeerConnection.CreateDataChannel("channel", nil)
 
+    go func() {
+        duration := 3*time.Second
+        for {
+            time.Sleep(duration)
+            inBytes := atomic.SwapInt32(&inboundBytes, 0)
+            outBytes := atomic.SwapInt32(&outboundBytes, 0)
+            p("inbound tp ", float64(inBytes) / duration.Seconds())
+            p("outbound tp ", float64(outBytes) / duration.Seconds())
+        }
+    } ()
 
 /* OLD 
     // Create a Network Interface Card
