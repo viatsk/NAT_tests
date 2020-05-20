@@ -27,9 +27,6 @@ var outboundBytes int32
  |                                         |
  |                                         |
  +-----------------------------------------+
-
-
-
 */
 
 func errHandler(err error) {
@@ -164,10 +161,32 @@ func chunkFilter (c vnet.Chunk) bool {
     return true
 }
 
+func getIPAddr (n vnet.Net) (string, error) {
+    eth0, err := n.InterfaceByName("eth0")
+    if err != nil {
+        return "", err
+    }
+
+    addrs, err := eth0.Addrs()
+    if err != nil {
+        p("ERR1")
+        return "", err
+    }
+
+    if len(addrs) < 1 {
+        p(addrs)
+        return "", fmt.Errorf("there must be at least 1 address")
+    }
+
+    // This is how you need to grab the IP address... why?
+    return addrs[0].(*net.IPNet).IP.String(), nil
+
+}
+
 // TODO:
-// The root router will ignore the configs - make sure there are two non-route routers here, then
 // Root router has no NAT - why 
 func main() {
+    doneCh := make(chan struct{})
     var (
         server = flag.String("server", fmt.Sprintf("pion.ly:3478"), "Stun Server Address")
     )
@@ -179,7 +198,7 @@ func main() {
 
     // Add chunk filter (monitors the traffic on the router)
     // on root or second router? 
-    rootRouter.AddChunkFilter(chunkFilter)
+//    rootRouter.AddChunkFilter(chunkFilter)
 
     // create a network interface 
     // can specify static IPs for the instance of the Net to use
@@ -191,21 +210,28 @@ func main() {
 
     // TODO: Use the bridge type outlined in the transport class
     // add the network to the router; the router will assign new IPs to network; this calls addNIC internally 
-    errHandler(rootRouter.AddNet(offerVNet))
+    //errHandler(rootRouter.AddNet(offerVNet))
     errHandler(secondRouter.AddNet(offerVNet))
-
-    doneCh := make(chan struct{})
-
-    // Start router, will start internal goroutine to route packets 
-    // call on root router, will propogate to children  
-    err = rootRouter.Start();
+    ip1, err := getIPAddr(*offerVNet)
 
     srvAddr, err := net.ResolveUDPAddr("udp", *server)
-    c, err := offerVNet.ListenPacket("udp", "1.2.3.4:1234") // may prefer ListenPacket? 
+    p(srvAddr)
+    answerVNet := vnet.NewNet(&vnet.NetConfig {
+        StaticIPs: []string{"1.2.3.5"},
+    })
+    errHandler(secondRouter.AddNet(answerVNet))
+    ip2, err := getIPAddr(*answerVNet)
 
-    p("server address is ", srvAddr)
-    p("connection returned by listenUDP is", c)
+    c, err := offerVNet.ListenPacket(
+                "udp",
+                fmt.Sprintf("%s:%d", ip1, 1234),
+            ) // may prefer ListenPacket? 
+    c2, err := answerVNet.ListenPacket(
+                "udp",
+                fmt.Sprintf("%s:%d", ip2, 1234),
+               )
 
+    err = secondRouter.Start();
     conn1RcvdCh := make(chan bool)
     go func() {
         buf := make ([]byte, maxMessageSize)
@@ -221,13 +247,6 @@ func main() {
         }
         close(doneCh)
     }()
-
-    answerVNet := vnet.NewNet(&vnet.NetConfig {
-        StaticIPs: []string{"1.2.3.5"},
-    })
-    errHandler(rootRouter.AddNet(answerVNet))
-    errHandler(secondRouter.AddNet(answerVNet))
-    c2, err := answerVNet.ListenPacket("udp", "1.2.3.5:1234")
 
     go func() {
         buf := make([]byte, maxMessageSize)
@@ -246,17 +265,20 @@ func main() {
         }
     }()
 
-    p("sending to c!")
+    p("sending to c2!", c2.LocalAddr())
     nSent, err := c.WriteTo(
         []byte("Hello"),
         c2.LocalAddr(),
     )
-    p("nSent is ", nSent)
+    p(err)
+    p("nSent is", nSent)
 
- loop:
+
+  loop:
     for {
         select {
         case <-conn1RcvdCh:
+            p("conn1RcvdCh is ", conn1RcvdCh)
             c.Close()
             c2.Close()
         case <-doneCh:
@@ -277,7 +299,6 @@ func main() {
     } ()
 
 
-    time.Sleep(30*time.Millisecond)
 
     secondRouter.Stop()
 */
