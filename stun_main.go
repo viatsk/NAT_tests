@@ -8,6 +8,7 @@ import (
 
 
 func main() {
+//    udp_serv := stun.NewUDPServer(nil, "test", 255, <handler>)
     stun_serv, err := stun.Dial("udp", "stun.l.google.com:19302")
     if err != nil {
         fmt.Println("Stun Dial error")

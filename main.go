@@ -7,8 +7,9 @@ import (
     "net"
     "github.com/pion/logging"
     "github.com/pion/transport/vnet"
-    "github.com/pion/webrtc/v2"
+    //"github.com/pion/webrtc/v2"
 //    "github.com/pion/stun"
+    "flag"
 )
 
 var p = fmt.Println
@@ -72,7 +73,7 @@ func (a *Agent) listenUDP (address string) error {
     if err != nil {
         return err
     }
-    p(conn)
+    p("connection is ", conn)
     return nil
 }
 
@@ -166,8 +167,12 @@ func chunkFilter (c vnet.Chunk) bool {
 // TODO:
 // The root router will ignore the configs - make sure there are two non-route routers here, then
 // Root router has no NAT - why 
-
 func main() {
+    var (
+        server = flag.String("server", fmt.Sprintf("pion.ly:3478"), "Stun Server Address")
+    )
+    p("SERVER IS ", *server)
+    maxMessageSize := 512
     // Make new router that is root router
     rootRouter, err := makeRouter("") // Type doesnt matter.... 
     secondRouter, err := makeRouter(S1)
@@ -176,43 +181,90 @@ func main() {
     // on root or second router? 
     rootRouter.AddChunkFilter(chunkFilter)
 
-    // LOG THROUGHPUT?? 
-
     // create a network interface 
     // can specify static IPs for the instance of the Net to use
     // if not specified, router will assign an IP address that is contained in the router's CIDR
     // this network interface is for the OFFERER 
-    network := vnet.NewNet(&vnet.NetConfig {
+    offerVNet := vnet.NewNet(&vnet.NetConfig {
         StaticIPs: []string{"1.2.3.4"},
     })
 
+    // TODO: Use the bridge type outlined in the transport class
+    // add the network to the router; the router will assign new IPs to network; this calls addNIC internally 
+    errHandler(rootRouter.AddNet(offerVNet))
+    errHandler(secondRouter.AddNet(offerVNet))
 
-    // add the network to the router; the router will assign new IPs to network
-    // this calls addNIC internally 
-    errHandler(rootRouter.AddNet(network))
-    errHandler(secondRouter.AddNet(network))
+    doneCh := make(chan struct{})
 
-    offerSettingEngine := webrtc.SettingEngine{}
-    offerSettingEngine.SetVNet(network)
-    offerAPI := webrtc.NewAPI(webrtc.WithSettingEngine(offerSettingEngine))
+    // Start router, will start internal goroutine to route packets 
+    // call on root router, will propogate to children  
+    err = rootRouter.Start();
 
-    // create an answer VNET 
+    srvAddr, err := net.ResolveUDPAddr("udp", *server)
+    c, err := offerVNet.ListenPacket("udp", "1.2.3.4:1234") // may prefer ListenPacket? 
+
+    p("server address is ", srvAddr)
+    p("connection returned by listenUDP is", c)
+
+    conn1RcvdCh := make(chan bool)
+    go func() {
+        buf := make ([]byte, maxMessageSize)
+        for {
+            p("waitin for a message.... ")
+            n, _, err2 := c.ReadFrom(buf)
+            if (err2 != nil) {
+                p("ERROR: ReadFrom returned : %v", err2)
+                break
+            }
+            p("offer recieved %s", string(buf[:n]))
+            conn1RcvdCh <- true
+        }
+        close(doneCh)
+    }()
+
     answerVNet := vnet.NewNet(&vnet.NetConfig {
         StaticIPs: []string{"1.2.3.5"},
     })
-    errHandler(rootRouter.AddNet(network))
-    errHandler(secondRouter.AddNet(network))
+    errHandler(rootRouter.AddNet(answerVNet))
+    errHandler(secondRouter.AddNet(answerVNet))
+    c2, err := answerVNet.ListenPacket("udp", "1.2.3.5:1234")
 
-    answerSettingEngine := webrtc.SettingEngine{}
-    answerSettingEngine.SetVNet(answerVNet)
-    answerAPI := webrtc.NewAPI(webrtc.WithSettingEngine(answerSettingEngine))
+    go func() {
+        buf := make([]byte, maxMessageSize)
+        for {
+            p("c2 waiting for message... ")
+            n, addr, err2 := c2.ReadFrom(buf)
+            if err2 != nil {
+                p("ERROR: ReadFrom2 returned %v", err2)
+                break
+            }
+            p("answer recieved %s", string(buf[:n]))
 
+            // Send something back to c
+            nSent, err2 := c2.WriteTo([]byte("Goodbye"), addr)
+            p(nSent, err2)
+        }
+    }()
 
-   // NOW WE SEND MESSAGES WEEE 
-    offerPeerConnection, err := offerAPI.NewPeerConnection(webrtc.Configuration{})
-    answerPeerConnection, err := answerAPI.NewPeerConnection(webrtc.Configuration{})
-    offerDataChannel, err := offerPeerConnection.CreateDataChannel("channel", nil)
+    p("sending to c!")
+    nSent, err := c.WriteTo(
+        []byte("Hello"),
+        c2.LocalAddr(),
+    )
+    p("nSent is ", nSent)
 
+ loop:
+    for {
+        select {
+        case <-conn1RcvdCh:
+            c.Close()
+            c2.Close()
+        case <-doneCh:
+            break loop
+        }
+    }
+
+/*
     go func() {
         duration := 3*time.Second
         for {
@@ -224,52 +276,11 @@ func main() {
         }
     } ()
 
-/* OLD 
-    // Create a Network Interface Card
-    nic := make([]*dummyNIC, 2)
-    ip  := make([]*net.UDPAddr, 2)
-
-    // need to interact with the NIC interfaces  
-    for i := 0; i < 2; i++ {
-        anic := vnet.NewNet(&vnet.NetConfig{})
-        nic[i] = &dummyNIC {
-            Net: *anic,
-        }
-
-        // Add dummy NIC card to the second router only 
-        err2 := secondRouter.AddNet(nic[i])
-
-        eth0, err2  := nic[i].InterfaceByName("eth0")
-        addrs, err2 := eth0.Addrs()
-        ip[i] = &net.UDPAddr {
-            IP: addrs[0].(*net.IPNet).IP,
-            Port: 1111 * (i+1),
-        }
-
-        nic[i].onInboundChunkHandler = func (c vnet.Chunk) {
-            p("nic[%d] received: %s", i, c.String())
-            p(c.UserData()[0])
-        }
-        p(err2)
-    }
-*/
-
-    // Start router, will start internal goroutine to route packets 
-    // call on root router, will propogate to children  
-    err = rootRouter.Start();
-
-    // SEND 3 PACKETS
-//    for i := 0; i < 3; i++ {
-//        c := newChunkUDP(ip[0], ip[1])
-//        c.userData = make([]byte, 1)
-//        c.userData[0] = byte(i)
-    //    secondRouter.push(c)
-        // Cant do push --- what to do? 
-//    }
 
     time.Sleep(30*time.Millisecond)
 
     secondRouter.Stop()
+*/
     p(rootRouter, err)
     p(secondRouter, err)
     p("Done")
